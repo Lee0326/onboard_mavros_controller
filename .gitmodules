@@ -1,0 +1,9 @@
+[submodule "src/catkin_simple"]
+	path = src/catkin_simple
+	url = https://github.com/catkin/catkin_simple
+[submodule "src/eigen_catkin"]
+	path = src/eigen_catkin
+	url = https://github.com/ethz-asl/eigen_catkin
+[submodule "src/mav_comm"]
+	path = src/mav_comm
+	url = https://github.com/ethz-asl/mav_comm
