@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.8.3)
 add_compile_options(-std=c++11)
-project(minimum_snap_trajectory)
+project(waypoints_trajectory)
 
 find_package(catkin REQUIRED 
     COMPONENTS

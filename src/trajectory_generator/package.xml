@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>minimum_snap_trajectory</name>
+  <name>waypoints_trajectory</name>
   <version>1.6.3</version>
   <description>The minimum snap trajectory generator</description>
   <maintainer email="lcyfly1@163.com">lee</maintainer>
