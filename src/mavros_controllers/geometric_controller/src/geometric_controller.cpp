@@ -37,6 +37,7 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle &nh, const ros::NodeHandle &n
   angularVelPub_ = nh_.advertise<mavros_msgs::AttitudeTarget>("command/bodyrate_command", 1);
   referencePosePub_ = nh_.advertise<geometry_msgs::PoseStamped>("reference/pose", 1);
   target_pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("mavros/setpoint_position/local", 10);
+  target_velocity_pub_ = nh_.advertise<geometry_msgs::TwistStamped>("/mavros/setpoint_velocity/cmd_vel", 1);
   posehistoryPub_ = nh_.advertise<nav_msgs::Path>("geometric_controller/path", 10);
   systemstatusPub_ = nh_.advertise<mavros_msgs::CompanionProcessStatus>("mavros/companion_process/status", 1);
   arming_client_ = nh_.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
@@ -82,6 +83,15 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle &nh, const ros::NodeHandle &n
 geometricCtrl::~geometricCtrl()
 {
   // Destructor
+}
+
+float geometricCtrl::satfunc(float data, float Max)
+{
+
+  if (abs(data) > Max)
+    return (data > 0) ? Max : -Max;
+  else
+    return data;
 }
 
 void geometricCtrl::targetCallback(const geometry_msgs::TwistStamped &msg)
@@ -222,12 +232,18 @@ void geometricCtrl::cmdloopCallback(const ros::TimerEvent &event)
     takingoff_msg.pose.position.y = initTargetPos_y_;
     takingoff_msg.pose.position.z = initTargetPos_z_;
     target_pose_pub_.publish(takingoff_msg);
-    // if (ros::Time::now() - last_request_ > ros::Duration(5.0))
-    //   node_state = MISSION_EXECUTION;
+
+    const Eigen::Vector3d pos_error = mavPos_ - targetPos_;
+    geometry_msgs::TwistStamped takingoff_vel_msg;
+    Eigen::Vector3d vel_cmd = Kpos_.asDiagonal() * pos_error;
+    takingoff_vel_msg.header.stamp = ros::Time::now();
+    takingoff_vel_msg.twist.linear.x = satfunc(vel_cmd(0), max_takingoff_vel_);
+    takingoff_vel_msg.twist.linear.y = satfunc(vel_cmd(1), max_takingoff_vel_);
+    takingoff_vel_msg.twist.linear.z = satfunc(vel_cmd(2), max_takingoff_vel_);
+    target_velocity_pub_.publish(takingoff_vel_msg);
     ros::spinOnce();
-    //std::cout << "the target z value: " << targetPos_(2) << std::endl;
+    break;
   }
-  break;
 
   case MISSION_EXECUTION:
     if (!feedthrough_enable_)
@@ -622,4 +638,3 @@ void geometricCtrl::dynamicReconfigureCallback(geometric_controller::GeometricCo
   Kpos_ << -Kpos_x_, -Kpos_y_, -Kpos_z_;
   Kvel_ << -Kvel_x_, -Kvel_z_, -Kvel_z_;
 }
-
