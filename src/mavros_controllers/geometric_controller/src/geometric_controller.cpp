@@ -42,6 +42,7 @@ geometricCtrl::geometricCtrl(const ros::NodeHandle &nh, const ros::NodeHandle &n
   arming_client_ = nh_.serviceClient<mavros_msgs::CommandBool>("mavros/cmd/arming");
   set_mode_client_ = nh_.serviceClient<mavros_msgs::SetMode>("mavros/set_mode");
   land_service_ = nh_.advertiseService("land", &geometricCtrl::landCallback, this);
+  last_request_ = ros::Time::now();
 
   nh_private_.param<string>("mavname", mav_name_, "iris");
   nh_private_.param<int>("ctrl_mode", ctrl_mode_, ERROR_QUATERNION);
@@ -103,6 +104,7 @@ void geometricCtrl::targetCallback(const geometry_msgs::TwistStamped &msg)
 
 void geometricCtrl::flattargetCallback(const controller_msgs::FlatTarget &msg)
 {
+  node_state = MISSION_EXECUTION;
   reference_request_last_ = reference_request_now_;
 
   targetPos_prev_ = targetPos_;
@@ -114,6 +116,8 @@ void geometricCtrl::flattargetCallback(const controller_msgs::FlatTarget &msg)
   targetPos_ = toEigen(msg.position);
   targetVel_ = toEigen(msg.velocity);
 
+  if (mavVel_.norm() > 1)
+    velocity_yaw_ = true;
   if (msg.type_mask == 1)
   {
     targetAcc_ = toEigen(msg.acceleration);
@@ -197,7 +201,6 @@ void geometricCtrl::mavtwistCallback(const geometry_msgs::TwistStamped &msg)
 bool geometricCtrl::landCallback(std_srvs::SetBool::Request &request, std_srvs::SetBool::Response &response)
 {
   node_state = LANDING;
-  return true;
 }
 
 void geometricCtrl::cmdloopCallback(const ros::TimerEvent &event)
@@ -207,8 +210,24 @@ void geometricCtrl::cmdloopCallback(const ros::TimerEvent &event)
   case WAITING_FOR_HOME_POSE:
     waitForPredicate(&received_home_pose, "Waiting for home pose...");
     ROS_INFO("Got pose! Drone Ready to be armed.");
-    node_state = MISSION_EXECUTION;
+    //node_state = MISSION_EXECUTION;
+    node_state = TAKING_OFF;
     break;
+
+  case TAKING_OFF:
+  {
+    geometry_msgs::PoseStamped takingoff_msg;
+    takingoff_msg.header.stamp = ros::Time::now();
+    takingoff_msg.pose.position.x = initTargetPos_x_;
+    takingoff_msg.pose.position.y = initTargetPos_y_;
+    takingoff_msg.pose.position.z = initTargetPos_z_;
+    target_pose_pub_.publish(takingoff_msg);
+    // if (ros::Time::now() - last_request_ > ros::Duration(5.0))
+    //   node_state = MISSION_EXECUTION;
+    ros::spinOnce();
+    //std::cout << "the target z value: " << targetPos_(2) << std::endl;
+  }
+  break;
 
   case MISSION_EXECUTION:
     if (!feedthrough_enable_)
@@ -247,7 +266,7 @@ void geometricCtrl::statusloopCallback(const ros::TimerEvent &event)
     // This is only run if the vehicle is simulated
     arm_cmd_.request.value = true;
     offb_set_mode_.request.custom_mode = "OFFBOARD";
-    if (current_state_.mode != "OFFBOARD" && (ros::Time::now() - last_request_ > ros::Duration(3.0)))
+    if (current_state_.mode != "OFFBOARD" && (ros::Time::now() - last_request_ > ros::Duration(2.0)))
     {
       if (set_mode_client_.call(offb_set_mode_) && offb_set_mode_.response.mode_sent)
       {
@@ -257,7 +276,7 @@ void geometricCtrl::statusloopCallback(const ros::TimerEvent &event)
     }
     else
     {
-      if (!current_state_.armed && (ros::Time::now() - last_request_ > ros::Duration(3.0)))
+      if (!current_state_.armed && (ros::Time::now() - last_request_ > ros::Duration(2.0)))
       {
         if (arming_client_.call(arm_cmd_) && arm_cmd_.response.success)
         {
@@ -358,13 +377,12 @@ void geometricCtrl::computeBodyRateCmd(Eigen::Vector4d &bodyrate_cmd, const Eige
   {
     mavYaw_ = getVelocityYaw(mavVel_);
   }
-
   const Eigen::Vector4d q_ref = acc2quaternion(a_ref - g_, mavYaw_);
   const Eigen::Matrix3d R_ref = quat2RotMatrix(q_ref);
 
   const Eigen::Vector3d pos_error = mavPos_ - target_pos;
   const Eigen::Vector3d vel_error = mavVel_ - target_vel;
-
+  std::cout << "the position error is: " << pos_error(2) << std::endl;
   Eigen::Vector3d a_fb =
       Kpos_.asDiagonal() * pos_error + Kvel_.asDiagonal() * vel_error; // feedforward term for trajectory error
   if (a_fb.norm() > max_fb_acc_)
@@ -385,6 +403,67 @@ void geometricCtrl::computeBodyRateCmd(Eigen::Vector4d &bodyrate_cmd, const Eige
   }
 }
 
+Eigen::Vector4d geometricCtrl::quatMultiplication(const Eigen::Vector4d &q, const Eigen::Vector4d &p)
+{
+  Eigen::Vector4d quat;
+  quat << p(0) * q(0) - p(1) * q(1) - p(2) * q(2) - p(3) * q(3), p(0) * q(1) + p(1) * q(0) - p(2) * q(3) + p(3) * q(2),
+      p(0) * q(2) + p(1) * q(3) + p(2) * q(0) - p(3) * q(1), p(0) * q(3) - p(1) * q(2) + p(2) * q(1) + p(3) * q(0);
+  return quat;
+}
+
+Eigen::Matrix3d geometricCtrl::quat2RotMatrix(const Eigen::Vector4d &q)
+{
+  Eigen::Matrix3d rotmat;
+  rotmat << q(0) * q(0) + q(1) * q(1) - q(2) * q(2) - q(3) * q(3), 2 * q(1) * q(2) - 2 * q(0) * q(3),
+      2 * q(0) * q(2) + 2 * q(1) * q(3),
+
+      2 * q(0) * q(3) + 2 * q(1) * q(2), q(0) * q(0) - q(1) * q(1) + q(2) * q(2) - q(3) * q(3),
+      2 * q(2) * q(3) - 2 * q(0) * q(1),
+
+      2 * q(1) * q(3) - 2 * q(0) * q(2), 2 * q(0) * q(1) + 2 * q(2) * q(3),
+      q(0) * q(0) - q(1) * q(1) - q(2) * q(2) + q(3) * q(3);
+  return rotmat;
+}
+
+Eigen::Vector4d geometricCtrl::rot2Quaternion(const Eigen::Matrix3d &R)
+{
+  Eigen::Vector4d quat;
+  double tr = R.trace();
+  if (tr > 0.0)
+  {
+    double S = sqrt(tr + 1.0) * 2.0; // S=4*qw
+    quat(0) = 0.25 * S;
+    quat(1) = (R(2, 1) - R(1, 2)) / S;
+    quat(2) = (R(0, 2) - R(2, 0)) / S;
+    quat(3) = (R(1, 0) - R(0, 1)) / S;
+  }
+  else if ((R(0, 0) > R(1, 1)) & (R(0, 0) > R(2, 2)))
+  {
+    double S = sqrt(1.0 + R(0, 0) - R(1, 1) - R(2, 2)) * 2.0; // S=4*qx
+    quat(0) = (R(2, 1) - R(1, 2)) / S;
+    quat(1) = 0.25 * S;
+    quat(2) = (R(0, 1) + R(1, 0)) / S;
+    quat(3) = (R(0, 2) + R(2, 0)) / S;
+  }
+  else if (R(1, 1) > R(2, 2))
+  {
+    double S = sqrt(1.0 + R(1, 1) - R(0, 0) - R(2, 2)) * 2.0; // S=4*qy
+    quat(0) = (R(0, 2) - R(2, 0)) / S;
+    quat(1) = (R(0, 1) + R(1, 0)) / S;
+    quat(2) = 0.25 * S;
+    quat(3) = (R(1, 2) + R(2, 1)) / S;
+  }
+  else
+  {
+    double S = sqrt(1.0 + R(2, 2) - R(0, 0) - R(1, 1)) * 2.0; // S=4*qz
+    quat(0) = (R(1, 0) - R(0, 1)) / S;
+    quat(1) = (R(0, 2) + R(2, 0)) / S;
+    quat(2) = (R(1, 2) + R(2, 1)) / S;
+    quat(3) = 0.25 * S;
+  }
+  return quat;
+}
+
 Eigen::Vector4d geometricCtrl::acc2quaternion(const Eigen::Vector3d &vector_acc, const double &yaw)
 {
   Eigen::Vector4d quat;
@@ -401,6 +480,8 @@ Eigen::Vector4d geometricCtrl::acc2quaternion(const Eigen::Vector3d &vector_acc,
   quat = rot2Quaternion(rotmat);
   return quat;
 }
+
+double geometricCtrl::getVelocityYaw(const Eigen::Vector3d velocity) { return atan2(velocity(1), velocity(0)); }
 
 Eigen::Vector4d geometricCtrl::attcontroller(const Eigen::Vector4d &ref_att, const Eigen::Vector3d &ref_acc,
                                              Eigen::Vector4d &curr_att)
@@ -455,6 +536,37 @@ Eigen::Vector4d geometricCtrl::geometric_attcontroller(const Eigen::Vector4d &re
   return ratecmd;
 }
 
+Eigen::Matrix3d geometricCtrl::matrix_hat(const Eigen::Vector3d &v)
+{
+  Eigen::Matrix3d m;
+  // Sanity checks on M
+  m << 0.0, -v(2), v(1), v(2), 0.0, -v(0), -v(1), v(0), 0.0;
+  return m;
+}
+
+Eigen::Vector3d geometricCtrl::matrix_hat_inv(const Eigen::Matrix3d &m)
+{
+  Eigen::Vector3d v;
+  // TODO: Sanity checks if m is skew symmetric
+  v << m(7), m(2), m(3);
+  return v;
+}
+
+void geometricCtrl::getStates(Eigen::Vector3d &pos, Eigen::Vector4d &att, Eigen::Vector3d &vel,
+                              Eigen::Vector3d &angvel)
+{
+  pos = mavPos_;
+  att = mavAtt_;
+  vel = mavVel_;
+  angvel = mavRate_;
+}
+
+void geometricCtrl::getErrors(Eigen::Vector3d &pos, Eigen::Vector3d &vel)
+{
+  pos = mavPos_ - targetPos_;
+  vel = mavVel_ - targetVel_;
+}
+
 bool geometricCtrl::ctrltriggerCallback(std_srvs::SetBool::Request &req, std_srvs::SetBool::Response &res)
 {
   unsigned char mode = req.data;
@@ -462,8 +574,11 @@ bool geometricCtrl::ctrltriggerCallback(std_srvs::SetBool::Request &req, std_srv
   ctrl_mode_ = mode;
   res.success = ctrl_mode_;
   res.message = "controller triggered";
-  return true;
 }
+
+void geometricCtrl::setBodyRateCommand(Eigen::Vector4d bodyrate_command) { cmdBodyRate_ = bodyrate_command; }
+
+void geometricCtrl::setFeedthrough(bool feed_through) { feedthrough_enable_ = feed_through; }
 
 void geometricCtrl::dynamicReconfigureCallback(geometric_controller::GeometricControllerConfig &config,
                                                uint32_t level)
@@ -507,3 +622,4 @@ void geometricCtrl::dynamicReconfigureCallback(geometric_controller::GeometricCo
   Kpos_ << -Kpos_x_, -Kpos_y_, -Kpos_z_;
   Kvel_ << -Kvel_x_, -Kvel_z_, -Kvel_z_;
 }
+
