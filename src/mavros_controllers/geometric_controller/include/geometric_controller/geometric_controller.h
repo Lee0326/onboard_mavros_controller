@@ -32,6 +32,7 @@
 #include <trajectory_msgs/MultiDOFJointTrajectory.h>
 #include <dynamic_reconfigure/server.h>
 #include <geometric_controller/GeometricControllerConfig.h>
+#include <quadrotor_msgs/PositionCommand.h>
 
 #define ERROR_QUATERNION 1
 #define ERROR_GEOMETRIC 2
@@ -59,6 +60,7 @@ private:
   ros::NodeHandle nh_private_;
   ros::Subscriber referenceSub_;
   ros::Subscriber flatreferenceSub_;
+  ros::Subscriber quadcmdSub_;
   ros::Subscriber multiDOFJointSub_;
   ros::Subscriber mavstateSub_;
   ros::Subscriber mavposeSub_, gzmavposeSub_;
@@ -117,6 +119,7 @@ private:
   void odomCallback(const nav_msgs::OdometryConstPtr &odomMsg);
   void targetCallback(const geometry_msgs::TwistStamped &msg);
   void flattargetCallback(const controller_msgs::FlatTarget &msg);
+  void quadmsgCallback(const quadrotor_msgs::PositionCommand::ConstPtr &cmd);
   void yawtargetCallback(const std_msgs::Float32 &msg);
   void multiDOFJointCallback(const trajectory_msgs::MultiDOFJointTrajectory &msg);
   void keyboardCallback(const geometry_msgs::Twist &msg);
@@ -134,6 +137,8 @@ private:
   Eigen::Vector4d attcontroller(const Eigen::Vector4d &ref_att, const Eigen::Vector3d &ref_acc, Eigen::Vector4d &curr_att);
   Eigen::Vector4d geometric_attcontroller(const Eigen::Vector4d &ref_att, const Eigen::Vector3d &ref_acc, Eigen::Vector4d &curr_att);
 
+
+  bool autoland();
   inline Eigen::Vector3d toEigen(const geometry_msgs::Point &p)
   {
     Eigen::Vector3d ev3(p.x, p.y, p.z);
